@@ -1,0 +1,273 @@
+---
+title: "HSCworkflow"
+output: html_document
+date: "2025-07-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(ggplot2)
+require(dplyr)
+require(magrittr)
+require(gridExtra)
+require(scales)
+require(cowplot)
+require(viridis)
+```
+
+## Data preparation
+
+First, prepare data inputs for BioenergeticHSC batch method 1, which implements the NREI model. This will basically create a large grid of depth, velocity, and temperature combinations. Other parameters (e.g., fish size) could also be modified here if desired.
+
+```{r Data input}
+  velocity <- seq(1,100, by=2)
+  depth <- seq(1, 100, by=2)
+  temp <- seq(5, 23, by=1)
+  hyd <- expand.grid(Velocity = velocity, Depth=depth)
+  hyd_full <- bind_rows(replicate(19, hyd, simplify = FALSE))
+  hyd_full$Temperature <- rep(temp, each = 2500) 
+  hyd_full$Roughness <- ""
+  hyd_full$ForkLength <- 6.5 ## Fork length in cm
+  hyd_full$Mass <- 3 ## mass in g
+  hyd_full$Turbidity <- 0
+  hyd_full$DriftFile <-""
+  hyd_full$Notes <- ""
+  hyd_full$Label <- seq(1,47500, by=1)
+  Batch1Input <- hyd_full %>% dplyr::select(., Label, Depth, Velocity, Roughness, ForkLength, Mass, Temperature, Turbidity, DriftFile, Notes)
+  
+```
+
+## Functions
+
+The following functions will be used on the output of BioenergeticHSC to convert energetics to a daily timestep. First, the function *dGEI* will compute a daily gross energy intake (J), which factors in the costs of non-foraging activity (assumed to be equal to SMR). Foraging duration is assumed to be 8 h, but this can be adjusted. The bioenergetics parameters are for coho, but could be adjusted for other species.
+
+```{r bioenergetics functions}
+
+
+#### Individual functions for energetics parameters
+base_smr <- function(temp, W){ ## SMR (J/s) - Function of temperature and weight (Trudel and Welch 2005)
+  SMR <- (1/3600) * exp(-2.94 + 0.87*log(W) + 0.064*temp)
+  return(SMR*14.1*1.75)
+}
+
+
+Cmax <- function(temp, W){ ## Cmax (g/g/day) - Water temperature and weight (W)
+  CTO <- 15  # Water temperature corresponding to 0.98 of the maximun consumption rate
+  CTM <- 18  # Water temperature at which temperature dependence is still 0.98 of the maximum
+  CTL <- 26 # Upper water temperature at which temperature dependence is some reduced fraction (CK4) of the maximum rate
+  CQ <- 5  # Lower water temperature at which temperature dependence is some reduced fraction (CK1) of the maximum rate
+  CK1 <- 0.42  # Unitless fraction, see above
+  CK4 <- 0.03  # Unitless fraction, see above
+  CA = 0.303  # intercept of the allometric mass function for a 1 g fish at optimum water temperature
+  CB = -0.275  # slope of allometric mass function, i.e. coefficient of mass dependence
+  # Temperature dependence function
+  G1 <-(1/(CTO-CQ)) * log((0.98*(1-CK1))/(CK1 * 0.02)) 	#1st
+  L1 <- exp(G1*(temp - CQ))	#2nd 
+  Ka <- (CK1 *L1) / (1 + CK1 * (L1-1))	#3rd 
+  G2 <-(1/(CTL-CTM)) * log((0.98 * (1-CK4)) / (CK4 * 0.02))	#4th 
+  L2 <-exp(G2*(CTL - temp)) 
+  Kb <-(CK4*L2) / (1 + CK4* (L2-1)) 
+  f_T <- Ka*Kb  
+  # Consumption equation. pCmax = 1, so drops out of equation 
+  Cmax <- (CA * W^CB) * f_T
+  return(Cmax)
+}
+
+SwimCost <- function(temp, W, velocity){ ## Swimming cost (J/s) - temperature, weight (W), velocity (cm/s)
+  oq <- 14.1 ## Oxycaloric coefficient (Videler 1993)
+  smr <- base_smr(temp, W)
+  SC_chinook <- (1/3600)*oq*exp(-6.25 + (0.72 * log(W)) + (1.6 *log(velocity)))
+  SC_coho <- (SC_chinook + (smr * 1.75)) ## Activity cost (J/s)
+  return(SC_coho)
+}
+
+dGEI <- function(GREI, temp, W){ ### Function that computes daily gross energy intake (J/day) less resting costs while not foraging
+  Cmax <- function(temp, W){ ## Water temperature and fish weight
+    CTO <- 15  # Water temperature corresponding to 0.98 of the maximum consumption rate
+    CTM <- 18  # Water temperature at which temperature dependence is still 0.98 of the maximum
+    CTL <- 26 # Upper water temperature at which temperature dependence is some reduced fraction (CK4) of the maximum rate
+    CQ <- 5  # Lower water temperature at which temperature dependence is some reduced fraction (CK1) of the maximum rate
+    CK1 <- 0.42  # Unitless fraction, see above
+    CK4 <- 0.03  # Unitless fraction, see above
+    CA = 0.303  # intercept of the allometric mass function for a 1 g fish at optimum water temperature
+    CB = -0.275  # slope of allometric mass function, i.e. coefficient of mass dependence
+    # Temperature dependence function
+    G1 <-(1/(CTO-CQ)) * log((0.98*(1-CK1))/(CK1 * 0.02)) 	#1st
+    L1 <- exp(G1*(temp - CQ))	#2nd 
+    Ka <- (CK1 *L1) / (1 + CK1 * (L1-1))	#3rd 
+    G2 <-(1/(CTL-CTM)) * log((0.98 * (1-CK4)) / (CK4 * 0.02))	#4th 
+    L2 <-exp(G2*(CTL - temp)) 
+    Kb <-(CK4*L2) / (1 + CK4* (L2-1)) 
+    f_T <- Ka*Kb  
+    # Consumption equation. pCmax = 1, so drops out of equation 
+    Cmax_i <- (CA * W^CB) * f_T
+    return(Cmax_i)
+  }
+  SMR <- (exp(-2.94 + 0.87*log(W) + 0.064* temp))*1.75 ## Energy costs O2/h while resting for coho (Trudel and Welch 2005)
+  GREI_total <- GREI * 14 * 3600 ## GREI (J/s) - Assume 14 h foraging window
+  Cmax_J <- Cmax(temp, W) * 3626 * W ## Cmax in total J. 3626 J/g wet weight from Waters (1977). 
+  Costs <- (SMR*14.1) * 10 ## Total resting costs (J), assuming fish are resting in zero velocity habitats. SMR converted to J from Videler 1993
+  ### Check if greater than Cmax, if it is then use Cmax
+  DGEI <- ifelse(GREI_total < Cmax_J, GREI_total - Costs, Cmax_J - Costs)
+  return(DGEI) 
+}
+
+
+```
+
+The input file is configured to predict habitat suitabiliy on a 2D depth and velocity grid. However, for visualization, univariate curves may be preferred. The following functions extract depth or velocity curves where the maximum for each is realized (i.e., a 1D vector that intersects the optimum of the 2D suitability matrix). In other words, each depth or velocity curve assumes that the other variable is not limiting suitability. 
+```{r }
+## Function to extract HSCs
+HSC_Vextract <- function(x){  ### Extracts rows that correspond to optimal depths (for velocity HSC)
+  dd <- x$Depth[which.max(x$dHSI)]
+  vhsc <- filter(x, Depth==dd)
+  return(vhsc)
+}
+
+HSC_Dextract <- function(x){  ### Extracts rows that correspond to optimal depths (for velocity HSC)
+  vv <- x$Velocity[which.max(x$dHSI)]
+  dhsc <- filter(x, Velocity==vv)
+  return(dhsc)
+}
+
+```
+
+## Data processing
+
+```{r data processing}
+##### Read in with batch method 1. Select and rename relevant columns
+  bsc_input <- read.csv("./BioenergeticHSCbatch1output.csv")
+  bsc <- na.omit(bsc_input)
+  bsc_subset <- bsc %>% dplyr::select(., Depth..cm., Velocity..cm.s., Fork.length..cm.,Mass..g., Temperature, Gross.rate.of.energy.intake..J.s.,
+                        Total.energy.costs..J.s., )
+  colnames(bsc_subset) <- c("Depth", "Velocity", "FL", "Mass", "Temperature", "GREI", "TotalCosts")
+
+  
+## Compute daily gross energy intake per day with dGEI function
+  bsc_subset$dGEI <- dGEI(bsc_subset$GREI, bsc_subset$Temperature, bsc_subset$Mass) 
+## Compute total activity costs (swiming and manuevering while foraging) per day
+  bsc_subset$Costs_day <- bsc_subset$TotalCosts * 14 * 3600 ### Ensure hours match dGEI function. 14 h assumed here
+  bsc_subset$dNREI <- bsc_subset$dGEI - bsc_subset$Costs_day ### Daily net energy intake
+  HSC_combined <- bsc_subset %>% dplyr::select(., GREI, Depth, Velocity, FL, Mass, Temperature, TotalCosts, dGEI, Costs_day, dNREI)  
+
+## Proportion of Cmax  
+  HSC_combined$Cmax_J <- Cmax(HSC_combined$Temperature, HSC_combined$Mass) * 3626 * 3
+  HSC_combined$pCmax <- HSC_combined$GREI*14*3600/HSC_combined$Cmax_J
+  HSC_combined$pCmax <- if_else(HSC_combined$pCmax > 1, 1, HSC_combined$pCmax)
+  
+## Standardize to 0-1 scale. All negative daily NREI is set to 0. This data frame now contains temperature-dependent HSCs.
+   HSC_combined$dHSI <- ifelse(HSC_combined$dNREI > 0, HSC_combined$dNREI/max(HSC_combined$dNREI), 0)  
+   HSC_velocity <- HSC_Vextract(HSC_combined)
+   HSC_depth <- HSC_Dextract(HSC_combined)
+
+```
+
+## Plotting
+Reproduced figures and associated data preparation from manuscript
+### Figure 1
+```{r fig1}
+## Cmax across a range of temperature
+  temp_range <- c(0:26)
+  velocity <- c(0:50)
+  C_max <- Cmax(temp_range, 3) ## Max consumption for 3 g fish across temperature range
+  cdat <- data.frame(Temperature = temp_range, Cmax=C_max*3626) ## Make into data frame and convert to J
+  cmax_plot <- cdat %>% ggplot(aes(x=Temperature, y=Cmax))+
+    geom_line(lwd=1.25)+theme_bw()+ylab("Max Consumption (J/g/day)")
+  #ggsave(cmax_plot, filename  = "Cmax.tiff", width = 7, height = 5, device='tiff', dpi=700)
+
+## SMR across a range of temperatures    
+  smr<- base_smr(temp_range, 3)
+  smr_dat <- data.frame(SMR = smr, Temperature = temp_range)
+  smr_plot <- smr_dat %>% ggplot(aes(x=Temperature, y=SMR))+
+    geom_line(lwd=1.25)+theme_bw()+ylab("Standard Metabolic Rate (J/s)")
+  
+## Activity costs across velocity and temperatures
+  temp_range_small <- c(6,12,18,24) 
+  tempxvelocity <- expand.grid(velocity, temp_range_small)
+  names(tempxvelocity) <- c("Velocity", "Temperature")
+  tempxvelocity$cost <- SwimCost(tempxvelocity$Temperature, 3, tempxvelocity$Velocity)
+  tempxvelocity$Temperature <- factor(tempxvelocity$Temperature)
+  activity_plot <- tempxvelocity %>% ggplot(aes(x=Velocity, y=cost, colour=Temperature))+
+    geom_line(lwd=1.25)+theme_bw()+ylab("Activity Costs (J/s)")+xlab("Velocity (cm/s)") + scale_colour_manual(values=c("blue", "yellow","orange", "red"))
+  
+## Combine into one figure 
+  fig1 <- grid.arrange(smr_plot, activity_plot,cmax_plot, nrow = 2, layout_matrix= rbind(c(1,2), 3))
+  
+```
+
+### Figure 2
+
+```{r fig2}
+## Illustrate modelling process and the influence of Cmax on daily net energy intake
+
+
+  HSC_velocity$Cmax_12 <- Cmax(12, HSC_velocity$Mass)*3626*3
+  HSC_velocity$Cmax_6 <- Cmax(6, HSC_velocity$Mass)*3626*3
+  
+## Plots of energy budgets against velocity at different temperatures
+  
+  example_6C <- HSC_velocity %>% filter(., Temperature == 6) %>% ggplot()+
+    geom_line(aes(x=Velocity, y=dGEI), color="green", lwd=1.2)+
+    geom_line(aes(x=Velocity, y=Costs_day), color="red", lwd=1.2) + 
+    geom_line(aes(x=Velocity, y=dNREI), color="black", lwd=1.2) +
+    geom_line(aes(x=Velocity, y=Cmax_6), lty=2, lwd=1.2)+
+    theme_bw() + ylim(0,2500)+ xlim(0,50)+ylab("Energy (J/day)") + xlab("Velocity (cm/s)")
+
+  
+  example_12C <- HSC_velocity %>% filter(., Temperature == 12) %>% ggplot()+
+    geom_line(aes(x=Velocity, y=dGEI), color="green", lwd=1.2)+
+    geom_line(aes(x=Velocity, y=Costs_day), color="red", lwd=1.2) + 
+    geom_line(aes(x=Velocity, y=dNREI), color="black", lwd=1.2) +
+    geom_line(aes(x=Velocity, y=Cmax_12), lty=2, lwd=1.2)+
+    theme_bw() + ylim(0,2500)+ xlim(0,50)+ylab("Energy (J/day)") + xlab("Velocity (cm/s)")
+  
+fig2 <-  plot_grid(example_6C, example_12C, labels = c("6\u00b0 C", "12\u00b0 C"), label_x=0.5)
+
+```
+
+### Figure 3
+```{r fig3}
+### Prepare data frames with univariate curves across temperatures
+  HSC_velocity$Temperature <- factor(HSC_velocity$Temperature)
+  HSC_depth$Temperature <- factor(HSC_depth$Temperature)
+  
+### Velocity plot    
+  vhsi_plot <- HSC_velocity %>% ggplot(aes(x=Velocity, y=dHSI, colour=Temperature))+
+    geom_line(se=F, lwd=0.75)+theme_bw()+ylim(0,1)+xlim(0,40)+xlab("Velocity (cm/s)") + ylab("Suitability (Standardized J/day)")+ scale_colour_viridis(discrete = TRUE)+theme(legend.position = "none")
+
+### Depth plot  
+  dhsi_plot <- HSC_depth %>% ggplot(aes(x=Depth, y=dHSI, colour=Temperature))+
+    geom_smooth(se=F, lwd=0.75)+theme_bw()+ylim(0,1)+xlim(0,100)+xlab("Depth (cm)") + ylab(NULL)+ scale_colour_viridis(discrete = TRUE)+theme(axis.text.y=element_blank(),axis.ticks.y = element_blank())
+  
+
+
+
+fig3 <- plot_grid(vhsi_plot, dhsi_plot + guides(colour = guide_legend(override.aes = list(linewidth = 1.5))))
+  
+  
+```
+
+### Figure 4
+```{r fig4}
+### Proportion of Cmax at the optimal depth/velocity across temperature
+  pcmax <- HSC_velocity %>% group_by(Temperature) %>%
+    filter(dHSI == max(dHSI)) %>% arrange(Temperature) %>%
+    mutate(Temperature = as.numeric(Temperature))%>%
+    mutate(ration = Cmax_J * pCmax)
+    
+   
+   pcmax_plot <- pcmax %>% ggplot()+
+    geom_hline(yintercept = 1, color="red", lty=2, lwd=2)+
+    geom_point(aes((Temperature+4), pCmax,), size=3)+theme_bw()+ylab("Proportion of Cmax")+xlab("") + ylim(0.5,1)+theme(axis.text.x=element_blank(),axis.ticks.x = element_blank())
+  
+  
+
+   ration_plot <- pcmax %>% ggplot()+
+     geom_line(aes((Temperature+4), Cmax_J), colour="red", lwd=2) +
+     geom_point(aes((Temperature+4), ration), size=3)+theme_bw()+
+    ylab("Daily Ration (J)") + xlab("Temperature \u00b0C")
+
+  fig4 <- plot_grid(pcmax_plot, ration_plot, nrow = 2, align = "v")
+
+
+```
