@@ -12,11 +12,17 @@ require(ggplot2)
 require(dplyr)
 require(magrittr)
 require(gridExtra)
+require(tidyr)
 require(scales)
 require(cowplot)
 require(viridis)
+require(broom)
 require(formatR)
 library(xfun)
+library(GIFT)
+library(purrr)
+library(colorspace)
+library(autoimage)
 ```
 
 ## Data preparation
@@ -87,7 +93,7 @@ SwimCost <- function(temp, W, velocity){ ## Swimming cost (J/s)
   return(SC_coho)
 }
 
-### Function that computes daily gross energy intake (J/day) 
+### Function that computes daily gross energy intake (J/day) for coho
 ### less resting costs while not foraging
 dGEI <- function(GREI, temp, W){ 
   Cmax <- function(temp, W){ # Same Cmax function
@@ -122,10 +128,53 @@ dGEI <- function(GREI, temp, W){
   return(DGEI) 
 }
 
+### Same function but re-parameterized for rainbow trout (Railsback and Rose 1999; Rand 1993)
+dGEI_rb <- function(GREI, temp, W){ 
+  Cmax <- function(temp, W){ # Same Cmax function
+    CTO <- 25  
+    CTM <- 22.5  
+    CTL <- 24.3 
+    CQ <- 3.5 
+    CK1 <- 0.2  
+    CK4 <- 0.01  
+    CA <- 0.303  
+    CB <- -0.275  
+    G1 <-(1/(CTO-CQ)) * log((0.98*(1-CK1))/(CK1 * 0.02)) 	
+    L1 <- exp(G1*(temp - CQ))	
+    Ka <- (CK1 *L1) / (1 + CK1 * (L1-1))	
+    G2 <-(1/(CTL-CTM)) * log((0.98 * (1-CK4)) / (CK4 * 0.02))	
+    L2 <-exp(G2*(CTL - temp)) 
+    Kb <-(CK4*L2) / (1 + CK4* (L2-1)) 
+    f_T <- Ka*Kb  
+    Cmax_i <- (CA * W^CB) * f_T
+    return(Cmax_i)
+  }
+## Energy costs O2/h for rainbow trout (Dodrill et al. 2016))  
+  RA = 0.013
+  RB = -0.217
+  RQ = 2.2
+  RTO = 22
+  RTM = 26
+  Y = log(RQ) * (RTM - RTO + 2)
+  Z = log(RQ) * (RTM - RTO)
+  X = (Z ** 2) * (1 + (1 + 40 / Y) ** 0.5) ** 2 / 400
+  V = (RTM - temp) / (RTM - RTO)
+  Rs_FT = V ^ X * exp(X * (1 - V))
+  SMR <- (0.013 * (W ^ -0.217) * W * R_ft * 3420)/24 #resting costs per hour
+  GREI_total <- GREI * 14 * 3600 ## GREI (J/s) - Assume 14 h foraging window
+## Cmax in total J. 3626 J/g wet weight from Waters (1977).   
+  Cmax_J <- Cmax(temp, W) * 3626 * W 
+## Total resting costs (J), assuming fish are resting in zero velocity habitats. 
+## SMR converted to J from Videler 1993  
+  Costs <- (SMR*14.1) * 10 
+### Check if daily intake greater than Cmax, if it is then use Cmax
+  DGEI <- ifelse(GREI_total < Cmax_J, GREI_total - Costs, Cmax_J - Costs)
+  return(DGEI) 
+}
 
 ```
 
-The input file is configured to predict habitat suitabiliy on a 2D depth and velocity grid. However, for visualization, univariate curves may be preferred. The following functions extract depth or velocity curves where the maximum for each is realized (i.e., a 1D vector that intersects the optimum of the 2D suitability matrix). In other words, each depth or velocity curve assumes that the other variable is not limiting suitability. 
+The input file is configured to predict habitat suitability on a 2D depth and velocity grid. However, for visualization, univariate curves may be preferred. The following functions extract depth or velocity curves where the maximum for each is realized (i.e., a 1D vector that intersects the optimum of the 2D suitability matrix). In other words, each depth or velocity curve assumes that the other variable is not limiting suitability. 
 ```{r }
 ## Function to extract HSCs
 ### Extracts rows that correspond to optimal depths (for velocity HSC)
@@ -222,8 +271,8 @@ Code to reproduce figures from the manuscript
     scale_colour_manual(values=c("blue", "yellow","orange", "red"))
   
 ## Combine into one figure 
-#  fig1 <- grid.arrange(smr_plot, activity_plot,cmax_plot, nrow = 2, 
-#                 layout_matrix= rbind(c(1,2), 3))
+fig1 <- grid.arrange(smr_plot, activity_plot,cmax_plot, nrow = 2, 
+                layout_matrix= rbind(c(1,2), 3))
 # ggsave("./Figures/Fig1.pdf", fig1,
 #           width = 10, height = 8, units = "in", dpi = 600)
   
@@ -254,13 +303,13 @@ Code to reproduce figures from the manuscript
     geom_line(aes(x=Velocity, y=Costs_day), color="red", lwd=1.2) + 
     geom_line(aes(x=Velocity, y=dNREI), color="black", lwd=1.2) +
     geom_line(aes(x=Velocity, y=Cmax_12), lty=2, lwd=1.2)+
-    theme_bw() + ylim(0,2500)+ xlim(0,50)+ylab("Energy (J/day)") + 
-    xlab("Velocity (cm/s)")
+    theme_bw() + ylim(0,2500)+ xlim(0,50)+ylab("") + 
+    xlab("Velocity (cm/s)") + theme(axis.text.y = element_blank())
   
-#fig2 <-  plot_grid(example_6C, example_12C, 
-#                   labels = c("6\u00b0 C", "12\u00b0 C"), label_x=0.5)
-# ggsave("./Figures/Fig2.pdf", fig2,
-#           width = 10, height = 8, units = "in", dpi = 600)
+fig2 <-  plot_grid(example_6C, example_12C, 
+                  labels = c("6\u00b0 C", "12\u00b0 C"), label_x=0.5, label_y = 0.99)
+ggsave("./Figures/Fig2.pdf", fig2,
+          width = 10, height = 8, units = "in", dpi = 600)
 
 ```
 
@@ -288,8 +337,8 @@ Code to reproduce figures from the manuscript
 
 
 
-#fig3 <- plot_grid(vhsi_plot, dhsi_plot + 
-#    guides(colour = guide_legend(override.aes = list(linewidth = 1.5))))
+fig3 <- plot_grid(vhsi_plot, dhsi_plot + 
+guides(colour = guide_legend(override.aes = list(linewidth = 1.5))))
 #   ggsave("./Figures/Fig3.pdf", fig3,
 #           width = 10, height = 8, units = "in", dpi = 600)
   
@@ -317,8 +366,89 @@ Code to reproduce figures from the manuscript
      geom_point(aes((Temperature+4), ration), size=3)+theme_bw()+
     ylab("Daily Ration (J)") + xlab("Temperature \u00b0C")
 
-#  fig4 <- plot_grid(pcmax_plot, ration_plot, nrow = 2, align = "v")
-#   ggsave("./Figures/Fig4.pdf", fig4,
-#           width = 10, height = 8, units = "in", dpi = 600)
+ fig4 <- plot_grid(pcmax_plot, ration_plot, nrow = 2, align = "v", labels = c("a", "b"))
+ ggsave("./Figures/Fig4.pdf", fig4,
+           width = 10, height = 8, units = "in", dpi = 600)
+
+```
+
+
+## Simple example application
+```{r Worked examples}
+
+### Simulate channel hydraulics across flows with hydraulic geometry simulator
+  hyd <- AvgHydraulics(S=0.01, wb=10, db=0.5, db_max=NULL, D84=100, xs_output=TRUE)
+
+
+### Generate flow x
+  qtemp <- data.frame(Q = c(0.10, 0.08, 0.05, 0.05, 0.05), temperature = c(20, 20, 21, 22, 22), Time=c(1,2,3,4,5), Scenario = "Base")
+  
+  qtemp_fa <- data.frame(Q = c(0.10, 0.09, 0.09, 0.09, 0.09), temperature = c(20, 20, 21, 22, 22), Time=c(1,2,3,4,5), Scenario = "Flow intervention")
+  
+  qtemp_ta <- data.frame(Q = c(0.10, 0.09, 0.09, 0.09, 0.09), temperature = c(20, 19, 18, 17, 17), Time=c(1,2,3,4,5), Scenario = "Flow and temperature intervention")
+  
+  qt_scenarios <- rbind.data.frame(qtemp, qtemp_fa, qtemp_ta)
+
+### Generate WUA predictions across all temperatures  
+  HSC_velocity <- HSC_velocity %>% mutate(., Velocity = Velocity*0.01) # convert to m/s
+  HSC_depth <- HSC_depth %>% mutate(., Depth = Depth*0.01) # convert to m
+
+## Group into depth and velocity HSI
+  velocity_list <- HSC_velocity %>% group_by(Temperature)%>% select(., Velocity, dHSI) %>% rename(., velocity=Velocity, suit=dHSI) %>% group_split()
+  depth_list <- HSC_depth %>% group_by(Temperature)%>% select(., Depth, dHSI) %>% rename(., depth=Depth, suit=dHSI) %>% group_split()
+
+## Apply Habitat function to generate WUA prediction for each temperature
+  
+habsim <- function(d, v){
+  Habitat(hyd, d_curve = d, v_curve = v) ## Habitat function from GIFT package
+}  
+
+wua_list <- Map(habsim, depth_list, velocity_list)
+wua_df <- list_rbind(wua_list, names_to = "temperature")
+wua_df <- wua_df %>% mutate(., temperature = temperature+4) ## offset to correct temperatures
+wua_df$temperature_level <- factor(wua_df$temperature)
+
+## Irregular Q intervals in hydraulic output 
+
+wua_smooth <- function(df){
+model <- loess(WUA ~ Q, data=df, span=0.3)
+smooth_data <- augment(model, df)
+return(smooth_data)
+}
+
+wua_df <- wua_df %>% group_by(temperature_level) %>% group_map(~wua_smooth(.), keep = TRUE) %>% bind_rows(.)
+
+### Match predicted WUA with flow and temperature time series
+qtemp_wua <- left_join(qt_scenarios, wua_df, by = c("Q", "temperature"))
+
+
+
+```
+
+### Figure 5
+```{r}
+
+
+
+wua_heatplot <- wua_df %>% filter(., Q < 0.10) %>%  ggplot(., aes(x = Q, y = temperature)) + geom_raster(aes(fill=.fitted), interpolate = TRUE) + 
+scale_fill_gradient(low = "lightblue", high = "red")+xlab("Flow (CMS)") + ylab("Temperature (\u00b0C)")+theme_bw()+labs(fill = "WUA")  
+
+tplot <- qtemp_wua %>% ggplot(., aes(x=Time, y = temperature, color=Scenario))+
+  geom_line(linewidth=1.5)+theme_bw()+ ylim(10,24)+ylab("Temperature (\u00b0C)") + theme(axis.text.x=element_blank())+theme(legend.position = "none")+
+   theme(plot.margin = unit(c(0.1, 0.1, 0, 0.5), "cm")) + xlab("")
+
+qplot <- qtemp_wua %>% ggplot(., aes(x=Time, y = Q, color=Scenario))+
+  geom_line(linewidth=1.5)+theme_bw() + ylab("Flow (CMS)")+ theme(axis.text.x=element_blank())+theme(legend.position = "none") +
+  theme(plot.margin = unit(c(0.1, 0.1, 0, 0.5), "cm")) + xlab("")
+  
+  wuaplot <- qtemp_wua %>% ggplot(., aes(x=Time, y = WUA, color=Scenario))+
+  geom_line(linewidth=1.5)+theme_bw()+theme(legend.position = "bottom")+
+    theme(plot.margin = unit(c(0.1, 0.1, 0.1, 0.5), "cm")) + theme(legend.title = element_blank()) 
+
+
+  fig5 <- plot_grid(wua_heatplot, tplot, qplot, wuaplot, nrow=4, ncol=1, rel_heights = c(2,1,1,1.5), align = "v", axis = "l", labels=c("a", "b", "c", "d"))
+  
+ggsave("./Figures/Fig5.pdf", fig5,
+         width = 8, height = 10, units = "in", dpi = 600)
 
 ```
