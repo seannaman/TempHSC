@@ -248,14 +248,15 @@ Code to reproduce figures from the manuscript
 ## Make into data frame and convert to J  
   cdat <- data.frame(Temperature = temp_range, Cmax=C_max*3626) 
   cmax_plot <- cdat %>% ggplot(aes(x=Temperature, y=Cmax))+
-    geom_line(lwd=1.25)+theme_bw()+ylab("Max Consumption (J/g/day)")
+    geom_line(lwd=1.25)+theme_bw()+ylab("Max Consumption (J/g/day)")+ xlab("Temperature (\u00b0C)")
 
 
 ## SMR across a range of temperatures    
   smr<- base_smr(temp_range, 3)
   smr_dat <- data.frame(SMR = smr, Temperature = temp_range)
   smr_plot <- smr_dat %>% ggplot(aes(x=Temperature, y=SMR))+
-    geom_line(lwd=1.25)+theme_bw()+ylab("Standard Metabolic Rate (J/s)")
+    geom_line(lwd=1.25)+theme_bw()+ylab("Standard Metabolic Rate (J/s)")+
+    xlab("Temperature (\u00b0C)")
   
 ## Activity costs across velocity and temperatures
   temp_range_small <- c(6,12,18,24) 
@@ -273,8 +274,8 @@ Code to reproduce figures from the manuscript
 ## Combine into one figure 
 fig1 <- grid.arrange(smr_plot, activity_plot,cmax_plot, nrow = 2, 
                 layout_matrix= rbind(c(1,2), 3))
-# ggsave("./Figures/Fig1.pdf", fig1,
-#           width = 10, height = 8, units = "in", dpi = 600)
+ggsave("./Figures/Fig1.pdf", fig1,
+           width = 10, height = 8, units = "in", dpi = 600)
   
 ```
 
@@ -364,7 +365,7 @@ guides(colour = guide_legend(override.aes = list(linewidth = 1.5))))
    ration_plot <- pcmax %>% ggplot()+
      geom_line(aes((Temperature+4), Cmax_J), colour="red", lwd=2) +
      geom_point(aes((Temperature+4), ration), size=3)+theme_bw()+
-    ylab("Daily Ration (J)") + xlab("Temperature \u00b0C")
+    ylab("Daily Ration (J)") + xlab("Temperature (\u00b0C)")
 
  fig4 <- plot_grid(pcmax_plot, ration_plot, nrow = 2, align = "v", labels = c("a", "b"))
  ggsave("./Figures/Fig4.pdf", fig4,
@@ -450,5 +451,28 @@ qplot <- qtemp_wua %>% ggplot(., aes(x=Time, y = Q, color=Scenario))+
   
 ggsave("./Figures/Fig5.pdf", fig5,
          width = 8, height = 10, units = "in", dpi = 600)
+
+```
+
+
+
+```{r S2 figures}
+ui <- hyd %>% ggplot(., aes(x=Q, y=Ui)) +
+  geom_line(linewidth=1.5) + theme_bw() + xlab("") + ylab("Velocity (m/s)")+
+  xlim(0,1.5) + ylim(0,1)
+
+di <- hyd %>% ggplot(., aes(x=Q, y=di)) +
+  geom_line(linewidth=1.5) + theme_bw() + xlab("") + ylab("Depth (m)")+
+  xlim(0,1.5) + ylim(0,0.5)
+
+
+wi <- hyd %>% ggplot(., aes(x=Q, y=Wi)) +
+  geom_line(linewidth=1.5) + theme_bw() + xlab("Flow (CMS)") + ylab("Wetted Width (m)") + xlim(0,1.5)
+  
+
+figS1 <- plot_grid(ui, di, wi, nrow=3, ncol=1)
+
+ggsave("./Figures/FigS1.tiff", figS1,
+         width = 10, height = 8, units = "in", dpi = 600)
 
 ```
